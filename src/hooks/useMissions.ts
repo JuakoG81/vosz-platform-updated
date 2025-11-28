@@ -1,60 +1,115 @@
-// Hook para gestionar misiones
 import { useState, useEffect, useCallback } from 'react'
-import { getMissions, type Mission } from '../lib/supabase'
+import { supabase } from '@/lib/supabase'
 
-interface MissionsByType {
-  daily: Mission[]
-  weekly: Mission[]
-  achievement: Mission[]
+export interface Mission {
+  id: string
+  title: string
+  description: string
+  type: 'daily' | 'weekly' | 'achievement' | 'special'
+  category: 'participation' | 'social' | 'education' | 'community'
+  difficulty: 'easy' | 'medium' | 'hard'
+  points_reward: number
+  badge_reward?: string
+  requirements: {
+    type: string
+    count: number
+    description: string
+  }[]
+  progress: number
+  is_completed: boolean
+  is_claimed: boolean
+  expires_at?: string
+  created_at: string
 }
 
-export function useMissions(userId?: string) {
-  const [missions, setMissions] = useState<Mission[]>([])
-  const [missionsByType, setMissionsByType] = useState<MissionsByType>({
-    daily: [],
-    weekly: [],
-    achievement: []
-  })
-  const [totalCompleted, setTotalCompleted] = useState(0)
-  const [totalMissions, setTotalMissions] = useState(0)
-  const [loading, setLoading] = useState(true)
+export interface MissionsByType {
+  [type: string]: Mission[]
+}
+
+export function useMissions() {
+  const [missionsByType, setMissionsByType] = useState<MissionsByType>({})
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const fetchMissions = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    
     try {
-      setLoading(true)
-      setError(null)
-      const response = await getMissions(userId)
+      const { data, error } = await supabase.functions.invoke('get-missions')
       
-      if (response?.data) {
-        setMissions(response.data.missions || [])
-        setMissionsByType(response.data.missions_by_type || {
-          daily: [],
-          weekly: [],
-          achievement: []
-        })
-        setTotalCompleted(response.data.total_completed || 0)
-        setTotalMissions(response.data.total_missions || 0)
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al cargar misiones')
-      console.error('Error fetching missions:', err)
+      if (error) throw error
+      
+      // Agrupar misiones por tipo
+      const grouped: MissionsByType = {}
+      data.missions.forEach((mission: Mission) => {
+        if (!grouped[mission.type]) {
+          grouped[mission.type] = []
+        }
+        grouped[mission.type].push(mission)
+      })
+      
+      setMissionsByType(grouped)
+    } catch (err: any) {
+      setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [])
+
+  const claimMission = useCallback(async (missionId: string) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('claim-mission', {
+        body: { missionId }
+      })
+      
+      if (error) throw error
+      
+      await fetchMissions()
+      
+      return { success: true, data }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [fetchMissions])
+
+  const refreshProgress = useCallback(async () => {
+    try {
+      const { error } = await supabase.functions.invoke('refresh-mission-progress')
+      
+      if (error) throw error
+      
+      await fetchMissions()
+      
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [fetchMissions])
 
   useEffect(() => {
     fetchMissions()
+    
+    // Actualizar cada 30 segundos
+    const interval = setInterval(fetchMissions, 30000)
+    return () => clearInterval(interval)
   }, [fetchMissions])
 
+  const allMissions = Object.values(missionsByType).flat()
+  const activeMissions = allMissions.filter(m => !m.is_completed)
+  const completedMissions = allMissions.filter(m => m.is_completed && !m.is_claimed)
+  const claimedMissions = allMissions.filter(m => m.is_claimed)
+
   return {
-    missions,
     missionsByType,
-    totalCompleted,
-    totalMissions,
+    allMissions,
+    activeMissions,
+    completedMissions,
+    claimedMissions,
     loading,
     error,
-    refresh: fetchMissions
+    fetchMissions,
+    claimMission,
+    refreshProgress,
   }
 }
