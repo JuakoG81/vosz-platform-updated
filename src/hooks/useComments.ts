@@ -1,129 +1,129 @@
-// Hook para gestionar comentarios
 import { useState, useEffect, useCallback } from 'react'
-import { getComments, createComment, deleteComment as deleteCommentFromSupabase, type Comment } from '../lib/supabase'
+import { supabase } from '@/lib/supabase'
 import { useReactions } from './useReactions'
 
-export function useComments(entityType: string, entityId: string) {
+export interface Comment {
+  id: string
+  content: string
+  author_id: string
+  author_name: string
+  author_avatar?: string
+  parent_id?: string
+  target_type: 'proposal' | 'project' | 'claim' | 'comment'
+  target_id: string
+  created_at: string
+  updated_at: string
+  is_edited: boolean
+  reactions: any[]
+  replies?: Comment[]
+}
+
+export function useComments(targetType: string, targetId: string) {
   const [comments, setComments] = useState<Comment[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { getReactions } = useReactions()
+  const { reactions, toggleReaction } = useReactions()
 
   const fetchComments = useCallback(async () => {
-    if (!entityId) return
+    setLoading(true)
+    setError(null)
     
     try {
-      setLoading(true)
-      setError(null)
-      const response = await getComments(entityType, entityId)
+      const { data, error } = await supabase.functions.invoke('get-comments', {
+        body: { targetType, targetId }
+      })
       
-      if (response?.data?.comments) {
-        setComments(response.data.comments)
-        
-        // Inicializar reacciones para todos los comentarios cargados
-        const commentIds = response.data.comments.map((comment: Comment) => comment.id)
-        if (commentIds.length > 0) {
-          await getReactions(commentIds)
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al cargar comentarios')
-      console.error('Error fetching comments:', err)
+      if (error) throw error
+      
+      setComments(data.comments || [])
+    } catch (err: any) {
+      setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [entityType, entityId, getReactions])
+  }, [targetType, targetId])
 
-  useEffect(() => {
-    fetchComments()
+  const createComment = useCallback(async (content: string, parentId?: string) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('create-comment', {
+        body: {
+          content,
+          targetType,
+          targetId,
+          parentId
+        }
+      })
+      
+      if (error) throw error
+      
+      await fetchComments()
+      
+      return { success: true, data }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [targetType, targetId, fetchComments])
+
+  const updateComment = useCallback(async (commentId: string, content: string) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('update-comment', {
+        body: { commentId, content }
+      })
+      
+      if (error) throw error
+      
+      await fetchComments()
+      
+      return { success: true, data }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
   }, [fetchComments])
 
-  // Polling automático cada 30 segundos
+  const deleteComment = useCallback(async (commentId: string) => {
+    try {
+      const { error } = await supabase.functions.invoke('delete-comment', {
+        body: { commentId }
+      })
+      
+      if (error) throw error
+      
+      await fetchComments()
+      
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [fetchComments])
+
+  const handleReaction = useCallback(async (commentId: string, emoji: string) => {
+    try {
+      await toggleReaction(`comment_${commentId}`, emoji)
+      await fetchComments() // Refrescar comentarios para actualizar contadores
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [toggleReaction, fetchComments])
+
   useEffect(() => {
-    const interval = setInterval(() => {
+    if (targetType && targetId) {
       fetchComments()
-    }, 30000) // 30 segundos
-
-    return () => clearInterval(interval)
-  }, [fetchComments])
-
-  const addComment = async (content: string, parentId?: string) => {
-    try {
-      setError(null)
-      const response = await createComment(content, entityType, entityId, parentId)
       
-      if (response?.data?.comment) {
-        await fetchComments()
-        return response.data
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al crear comentario')
-      console.error('Error creating comment:', err)
-      throw err
+      // Actualizar cada 30 segundos
+      const interval = setInterval(fetchComments, 30000)
+      return () => clearInterval(interval)
     }
-  }
-
-  const [loadingDelete, setLoadingDelete] = useState<string | null>(null)
-  const [errorDelete, setErrorDelete] = useState<string | null>(null)
-
-  const removeComment = async (commentId: string, confirmDelete?: boolean) => {
-    try {
-      setErrorDelete(null)
-      setLoadingDelete(commentId)
-      
-      // Obtener el comentario para verificar si tiene respuestas
-      const commentToDelete = comments.find(c => c.id === commentId)
-      if (!commentToDelete) {
-        throw new Error('Comentario no encontrado')
-      }
-
-      const hasReplies = commentToDelete.replies && commentToDelete.replies.length > 0
-      
-      // Si el comentario tiene respuestas y no se confirmó la eliminación, pedir confirmación
-      if (hasReplies && !confirmDelete) {
-        const error = new Error('CONFIRMATION_REQUIRED') as any
-        error.hasReplies = true
-        error.commentId = commentId
-        throw error
-      }
-
-      await deleteCommentFromSupabase(commentId, confirmDelete)
-      
-      // Actualización inmediata del estado sin necesidad de recargar
-      setComments(prev => prev.filter(comment => comment.id !== commentId))
-      
-      // También eliminar de las respuestas anidadas
-      const removeFromReplies = (replies: any[]): any[] => {
-        return replies.filter(reply => reply.id !== commentId).map(reply => ({
-          ...reply,
-          replies: reply.replies ? removeFromReplies(reply.replies) : []
-        }))
-      }
-      
-      setComments(prev => prev.map(comment => ({
-        ...comment,
-        replies: comment.replies ? removeFromReplies(comment.replies) : []
-      })))
-      
-      return { success: true, hasReplies }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Error al eliminar comentario'
-      setErrorDelete(errorMessage)
-      console.error('Error deleting comment:', err)
-      throw err
-    } finally {
-      setLoadingDelete(null)
-    }
-  }
+  }, [targetType, targetId, fetchComments])
 
   return {
     comments,
     loading,
     error,
-    addComment,
-    removeComment,
-    loadingDelete,
-    errorDelete,
-    refresh: fetchComments
+    fetchComments,
+    createComment,
+    updateComment,
+    deleteComment,
+    handleReaction,
   }
 }
