@@ -1,31 +1,57 @@
-import { DEV_USER } from '@/lib/supabase';
+import { useState, useCallback } from 'react'
 
-export interface AuthUser {
-  id: string;
-  username: string;
-  email?: string;
-  name?: string;
-  points?: number;
+export const DEV_USER = {
+  id: '00000000-0000-0000-0000-000000000001',
+  email: 'dev@vosz.app',
+  user_metadata: {
+    first_name: 'Usuario',
+    last_name: 'Desarrollo',
+    avatar: 'avatar1',
+    show_email: false,
+    show_location: false,
+    allow_messages: true,
+    public_profile: true,
+  }
 }
 
-/**
- * Hook de autenticación para VOSZ Platform
- * MODO DEV: Devuelve usuario simulado para desarrollo
- */
-export function useAuth(): { user: AuthUser | null; loading: boolean; error: string | null } {
-  // MODO DEV: Siempre retornamos el usuario de desarrollo
-  // En producción, aquí iría la lógica real de autenticación
-  const user = {
-    id: DEV_USER.id,
-    username: DEV_USER.username,
-    points: DEV_USER.points,
-    email: 'dev@vosz.com',
-    name: 'Usuario de Desarrollo'
-  };
+export function useAuth() {
+  const [user, setUser] = useState(DEV_USER)
+
+  const signIn = useCallback(async (email: string, password: string) => {
+    try {
+      // Simular autenticación exitosa
+      setUser(DEV_USER)
+      return { user: DEV_USER, error: null }
+    } catch (error: any) {
+      return { user: null, error: error.message }
+    }
+  }, [])
+
+  const signOut = useCallback(async () => {
+    try {
+      setUser(null)
+      return { error: null }
+    } catch (error: any) {
+      return { error: error.message }
+    }
+  }, [])
+
+  const updateUser = useCallback((updates: any) => {
+    setUser(prev => ({
+      ...prev,
+      ...updates,
+      user_metadata: {
+        ...prev.user_metadata,
+        ...updates.user_metadata,
+      }
+    }))
+  }, [])
 
   return {
     user,
     loading: false,
-    error: null
-  };
+    signIn,
+    signOut,
+    updateUser,
+  }
 }
