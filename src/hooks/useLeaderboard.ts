@@ -1,49 +1,52 @@
-// Hook para gestionar leaderboards territoriales
 import { useState, useEffect, useCallback } from 'react'
-import { getLeaderboard, type LeaderboardUser } from '../lib/supabase'
+import { supabase } from '@/lib/supabase'
 
-export type LeaderboardScope = 'global' | 'city' | 'province' | 'neighborhood'
+export interface LeaderboardEntry {
+  rank: number
+  user_id: string
+  user_name: string
+  user_avatar?: string
+  score: number
+  position: 'global' | 'city' | 'province' | 'neighborhood'
+  change_from_last_week: number
+}
 
-export function useLeaderboard(initialScope: LeaderboardScope = 'global', initialLocation?: string) {
-  const [leaderboard, setLeaderboard] = useState<LeaderboardUser[]>([])
-  const [scope, setScope] = useState<LeaderboardScope>(initialScope)
-  const [location, setLocation] = useState<string | undefined>(initialLocation)
-  const [loading, setLoading] = useState(true)
+export function useLeaderboard(position: 'global' | 'city' | 'province' | 'neighborhood' = 'global', location?: string) {
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([])
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const fetchLeaderboard = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    
     try {
-      setLoading(true)
-      setError(null)
-      const response = await getLeaderboard(scope, location, 50)
+      const { data, error } = await supabase.functions.invoke('get-leaderboard', {
+        body: { position, location }
+      })
       
-      if (response?.data?.leaderboard) {
-        setLeaderboard(response.data.leaderboard)
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al cargar ranking')
-      console.error('Error fetching leaderboard:', err)
+      if (error) throw error
+      
+      setLeaderboard(data.leaderboard || [])
+    } catch (err: any) {
+      setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [scope, location])
+  }, [position, location])
 
   useEffect(() => {
     fetchLeaderboard()
+    
+    // Actualizar cada 30 segundos
+    const interval = setInterval(fetchLeaderboard, 30000)
+    return () => clearInterval(interval)
   }, [fetchLeaderboard])
-
-  const changeScope = (newScope: LeaderboardScope, newLocation?: string) => {
-    setScope(newScope)
-    setLocation(newLocation)
-  }
 
   return {
     leaderboard,
-    scope,
-    location,
     loading,
     error,
-    changeScope,
-    refresh: fetchLeaderboard
+    refetch: fetchLeaderboard,
   }
 }
