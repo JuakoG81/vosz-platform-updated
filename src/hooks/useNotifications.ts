@@ -1,87 +1,150 @@
-// Hook para gestionar notificaciones con polling automatico
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { getNotifications, markNotificationsRead, type Notification } from '../lib/supabase'
+import { useState, useEffect, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
 
-const POLLING_INTERVAL = 30000 // 30 segundos
+export interface Notification {
+  id: string
+  type: 'proposal_comment' | 'project_update' | 'mission_reward' | 'mention' | 'system'
+  title: string
+  message: string
+  data: {
+    proposal_id?: string
+    project_id?: string
+    comment_id?: string
+    user_id?: string
+  }
+  is_read: boolean
+  created_at: string
+  read_at?: string
+}
 
 export function useNotifications() {
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
 
-  const fetchNotifications = useCallback(async (isBackgroundRefresh = false) => {
+  const fetchNotifications = useCallback(async (limit = 50) => {
+    setLoading(true)
+    setError(null)
+    
     try {
-      if (!isBackgroundRefresh) {
-        setLoading(true)
-      }
-      setError(null)
-      const response = await getNotifications(false, 50)
+      const { data, error } = await supabase.functions.invoke('get-notifications', {
+        body: { limit }
+      })
       
-      if (response?.data) {
-        setNotifications(response.data.notifications || [])
-        setUnreadCount(response.data.unread_count || 0)
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al cargar notificaciones')
-      console.error('Error fetching notifications:', err)
+      if (error) throw error
+      
+      setNotifications(data.notifications || [])
+      setUnreadCount(data.unreadCount || 0)
+    } catch (err: any) {
+      setError(err.message)
     } finally {
-      if (!isBackgroundRefresh) {
-        setLoading(false)
+      setLoading(false)
+    }
+  }, [])
+
+  const markAsRead = useCallback(async (notificationIds: string[]) => {
+    try {
+      const { error } = await supabase.functions.invoke('mark-notifications-read', {
+        body: { notificationIds }
+      })
+      
+      if (error) throw error
+      
+      // Actualizar estado local
+      setNotifications(prev => prev.map(notif => 
+        notificationIds.includes(notif.id) ? { ...notif, is_read: true, read_at: new Date().toISOString() } : notif
+      ))
+      
+      setUnreadCount(prev => Math.max(0, prev - notificationIds.length))
+      
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [])
+
+  const markAllAsRead = useCallback(async () => {
+    try {
+      const unreadIds = notifications.filter(n => !n.is_read).map(n => n.id)
+      
+      if (unreadIds.length === 0) return { success: true }
+      
+      const { error } = await supabase.functions.invoke('mark-notifications-read', {
+        body: { notificationIds: unreadIds }
+      })
+      
+      if (error) throw error
+      
+      // Actualizar estado local
+      setNotifications(prev => prev.map(notif => ({ 
+        ...notif, 
+        is_read: true, 
+        read_at: new Date().toISOString() 
+      })))
+      
+      setUnreadCount(0)
+      
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [notifications])
+
+  const deleteNotification = useCallback(async (notificationId: string) => {
+    try {
+      const { error } = await supabase.functions.invoke('delete-notification', {
+        body: { notificationId }
+      })
+      
+      if (error) throw error
+      
+      const deletedNotif = notifications.find(n => n.id === notificationId)
+      setNotifications(prev => prev.filter(n => n.id !== notificationId))
+      
+      // Actualizar contador si la notificación no había sido leída
+      if (deletedNotif && !deletedNotif.is_read) {
+        setUnreadCount(prev => Math.max(0, prev - 1))
       }
+      
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [notifications])
+
+  const clearAll = useCallback(async () => {
+    try {
+      const { error } = await supabase.functions.invoke('clear-notifications')
+      
+      if (error) throw error
+      
+      setNotifications([])
+      setUnreadCount(0)
+      
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
     }
   }, [])
 
   useEffect(() => {
-    // Carga inicial
     fetchNotifications()
-
-    // Configurar polling automatico cada 30 segundos
-    intervalRef.current = setInterval(() => {
-      fetchNotifications(true) // Background refresh sin loading state
-    }, POLLING_INTERVAL)
-
-    // Cleanup al desmontar
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-      }
-    }
+    
+    // Actualizar cada 30 segundos
+    const interval = setInterval(fetchNotifications, 30000)
+    return () => clearInterval(interval)
   }, [fetchNotifications])
-
-  const markAsRead = async (notificationIds: string[]) => {
-    try {
-      setError(null)
-      await markNotificationsRead(notificationIds)
-      await fetchNotifications()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al marcar notificacion')
-      console.error('Error marking notification as read:', err)
-      throw err
-    }
-  }
-
-  const markAllAsRead = async () => {
-    try {
-      setError(null)
-      await markNotificationsRead(undefined, true)
-      await fetchNotifications()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al marcar notificaciones')
-      console.error('Error marking all as read:', err)
-      throw err
-    }
-  }
 
   return {
     notifications,
     unreadCount,
     loading,
     error,
+    fetchNotifications,
     markAsRead,
     markAllAsRead,
-    refresh: fetchNotifications,
-    fetchNotifications
+    deleteNotification,
+    clearAll,
   }
 }
