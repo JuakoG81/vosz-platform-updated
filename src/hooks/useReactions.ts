@@ -1,196 +1,157 @@
-// Hook para gestionar reacciones con emojis en comentarios
 import { useState, useEffect, useCallback } from 'react'
-import { getReactions as getReactionsFunc, addReaction as addReactionFunc, removeReaction as removeReactionFunc } from '../lib/supabase'
-import type { EmojiType, CommentReaction, ReactionCount, AddReactionData } from '../types/reactions'
+import { supabase } from '@/lib/supabase'
+import { ReactionCounts, ReactionEmoji } from '@/types/reactions'
 
-interface UseReactionsReturn {
-  reactions: Record<string, ReactionCount[]>
-  loading: boolean
-  error: string | null
-  addReaction: (commentId: string, emojiType: EmojiType) => Promise<void>
-  removeReaction: (commentId: string, emojiType: EmojiType) => Promise<void>
-  getReactions: (commentIds: string[]) => Promise<void>
-  refreshReactions: () => void
-}
-
-export function useReactions(): UseReactionsReturn {
-  const [reactions, setReactions] = useState<Record<string, ReactionCount[]>>({})
+export function useReactions() {
+  const [reactions, setReactions] = useState<ReactionCounts>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Función para obtener reacciones de múltiples comentarios
-  const fetchReactions = useCallback(async (commentIds: string[]) => {
-    if (!commentIds.length) return
-
-    try {
-      setError(null)
-      const response = await getReactionsFunc(commentIds)
-
-      if (!response?.success && response?.error) {
-        throw new Error(response.error.message || 'Error al obtener reacciones')
-      }
-
-      if (response?.data) {
-        const reactionsMap: Record<string, ReactionCount[]> = {}
-        
-        // Inicializar mapa para cada comentario
-        commentIds.forEach(commentId => {
-          reactionsMap[commentId] = []
-        })
-
-        // Agregar contadores por emoji
-        if (Array.isArray(response.data.counts)) {
-          response.data.counts.forEach((countData: any) => {
-            const commentId = countData.comment_id
-            if (commentId && reactionsMap[commentId]) {
-              reactionsMap[commentId].push({
-                emoji_type: countData.emoji_type,
-                count: countData.count
-              })
-            }
-          })
-        }
-
-        setReactions(reactionsMap)
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Error al obtener reacciones'
-      setError(errorMessage)
-      console.error('Error fetching reactions:', err)
-    }
-  }, [])
-
-  // Función para agregar una reacción
-  const addReaction = async (commentId: string, emojiType: EmojiType) => {
-    try {
-      setError(null)
-
-      const response = await addReactionFunc(commentId, emojiType)
-
-      if (!response?.success && response?.error) {
-        throw new Error(response.error.message || 'Error al agregar reacción')
-      }
-
-      // Actualizar estado local inmediatamente para mejor UX
-      setReactions(prev => {
-        const updated = { ...prev }
-        const currentReactions = updated[commentId] || []
-        
-        // Buscar si el usuario ya reaccionó con este emoji
-        const existingIndex = currentReactions.findIndex(
-          r => r.emoji_type === emojiType
-        )
-
-        if (existingIndex >= 0) {
-          // Incrementar contador existente
-          updated[commentId] = currentReactions.map((r, index) =>
-            index === existingIndex
-              ? { ...r, count: r.count + 1 }
-              : r
-          )
-        } else {
-          // Agregar nueva reacción
-          updated[commentId] = [
-            ...currentReactions,
-            { emoji_type: emojiType, count: 1 }
-          ]
-        }
-
-        return updated
-      })
-
-      // Refrescar datos del servidor
-      await refreshReactions()
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Error al agregar reacción'
-      setError(errorMessage)
-      console.error('Error adding reaction:', err)
-      throw err
-    }
-  }
-
-  // Función para remover una reacción
-  const removeReaction = async (commentId: string, emojiType: EmojiType) => {
-    try {
-      setError(null)
-
-      const response = await removeReactionFunc(commentId, emojiType)
-
-      if (!response?.success && response?.error) {
-        throw new Error(response.error.message || 'Error al remover reacción')
-      }
-
-      // Actualizar estado local inmediatamente
-      setReactions(prev => {
-        const updated = { ...prev }
-        const currentReactions = updated[commentId] || []
-
-        const existingIndex = currentReactions.findIndex(
-          r => r.emoji_type === emojiType
-        )
-
-        if (existingIndex >= 0) {
-          const updatedReactions = currentReactions.map((r, index) =>
-            index === existingIndex && r.count > 1
-              ? { ...r, count: r.count - 1 }
-              : index === existingIndex && r.count <= 1
-              ? null // Eliminar la reacción si el count llega a 0
-              : r
-          ).filter(Boolean) as ReactionCount[]
-
-          updated[commentId] = updatedReactions
-        }
-
-        return updated
-      })
-
-      // Refrescar datos del servidor
-      await refreshReactions()
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Error al remover reacción'
-      setError(errorMessage)
-      console.error('Error removing reaction:', err)
-      throw err
-    }
-  }
-
-  // Función para obtener reacciones de comentarios específicos
-  const getReactions = useCallback(async (commentIds: string[]) => {
+  const fetchReactions = useCallback(async (targetId: string, targetType: string) => {
     setLoading(true)
+    setError(null)
+    
     try {
-      await fetchReactions(commentIds)
+      const { data, error } = await supabase.functions.invoke('get-reactions', {
+        body: { targetId, targetType }
+      })
+      
+      if (error) throw error
+      
+      setReactions(data.reactions || {})
+    } catch (err: any) {
+      setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [fetchReactions])
+  }, [])
 
-  // Función para refrescar todas las reacciones
-  const refreshReactions = useCallback(async () => {
-    const commentIds = Object.keys(reactions)
-    if (commentIds.length > 0) {
-      await fetchReactions(commentIds)
+  const toggleReaction = useCallback(async (targetId: string, emoji: ReactionEmoji) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('toggle-reaction', {
+        body: { targetId, emoji }
+      })
+      
+      if (error) throw error
+      
+      // Actualizar estado local
+      setReactions(prev => {
+        const currentCount = prev[emoji] || 0
+        const hasReacted = data.userReactions?.includes(emoji)
+        
+        return {
+          ...prev,
+          [emoji]: hasReacted ? currentCount + 1 : Math.max(0, currentCount - 1)
+        }
+      })
+      
+      return { success: true, data }
+    } catch (err: any) {
+      return { success: false, error: err.message }
     }
-  }, [reactions, fetchReactions])
+  }, [])
 
-  // Polling automático cada 30 segundos
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const commentIds = Object.keys(reactions)
-      if (commentIds.length > 0) {
-        fetchReactions(commentIds)
+  const getUserReactions = useCallback(async (targetId: string) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('get-user-reactions', {
+        body: { targetId }
+      })
+      
+      if (error) throw error
+      
+      return { success: true, data: data.reactions || [] }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [])
+
+  const clearAllReactions = useCallback(async (targetId: string) => {
+    try {
+      const { error } = await supabase.functions.invoke('clear-all-reactions', {
+        body: { targetId }
+      })
+      
+      if (error) throw error
+      
+      setReactions({})
+      
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [])
+
+  // Función para agregar una reacción sin remover otras (solo añadir)
+  const addReaction = useCallback(async (targetId: string, emoji: ReactionEmoji) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('add-reaction', {
+        body: { targetId, emoji }
+      })
+      
+      if (error) throw error
+      
+      setReactions(prev => ({
+        ...prev,
+        [emoji]: (prev[emoji] || 0) + 1
+      }))
+      
+      return { success: true, data }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [])
+
+  // Función para remover una reacción específica
+  const removeReaction = useCallback(async (targetId: string, emoji: ReactionEmoji) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('remove-reaction', {
+        body: { targetId, emoji }
+      })
+      
+      if (error) throw error
+      
+      setReactions(prev => ({
+        ...prev,
+        [emoji]: Math.max(0, (prev[emoji] || 0) - 1)
+      }))
+      
+      return { success: true, data }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [])
+
+  // Obtener el emoji con más reacciones
+  const getMostPopularReaction = useCallback(() => {
+    let maxCount = 0
+    let mostPopularEmoji: ReactionEmoji | null = null
+    
+    Object.entries(reactions).forEach(([emoji, count]) => {
+      if (count > maxCount) {
+        maxCount = count
+        mostPopularEmoji = emoji as ReactionEmoji
       }
-    }, 30000) // 30 segundos
+    })
+    
+    return mostPopularEmoji
+  }, [reactions])
 
-    return () => clearInterval(interval)
-  }, [fetchReactions, reactions])
+  // Obtener total de reacciones
+  const getTotalReactions = useCallback(() => {
+    return Object.values(reactions).reduce((sum, count) => sum + count, 0)
+  }, [reactions])
 
   return {
     reactions,
     loading,
     error,
+    fetchReactions,
+    toggleReaction,
     addReaction,
     removeReaction,
-    getReactions,
-    refreshReactions
+    getUserReactions,
+    clearAllReactions,
+    getMostPopularReaction,
+    getTotalReactions,
   }
 }
