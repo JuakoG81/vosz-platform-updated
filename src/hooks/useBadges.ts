@@ -1,66 +1,68 @@
-// Hook para gestionar badges del usuario
 import { useState, useEffect, useCallback } from 'react'
-import { getUserBadges, type Badge } from '../lib/supabase'
+import { supabase } from '@/lib/supabase'
 
-interface BadgesByCategory {
-  participation: Badge[]
-  validation: Badge[]
-  projects: Badge[]
-  community: Badge[]
-  special: Badge[]
+export interface Badge {
+  id: string
+  name: string
+  description: string
+  icon: string
+  category: string
+  progress: number
+  unlocked_at?: string
+  requirements: {
+    type: 'proposals' | 'comments' | 'votes' | 'streak' | 'special'
+    count: number
+    description: string
+  }
 }
 
-export function useBadges(userId?: string) {
-  const [badges, setBadges] = useState<Badge[]>([])
-  const [badgesByCategory, setBadgesByCategory] = useState<BadgesByCategory>({
-    participation: [],
-    validation: [],
-    projects: [],
-    community: [],
-    special: []
-  })
-  const [totalEarned, setTotalEarned] = useState(0)
-  const [totalAvailable, setTotalAvailable] = useState(0)
-  const [loading, setLoading] = useState(true)
+export interface BadgesByCategory {
+  [category: string]: Badge[]
+}
+
+export function useBadges() {
+  const [badgesByCategory, setBadgesByCategory] = useState<BadgesByCategory>({})
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const fetchBadges = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    
     try {
-      setLoading(true)
-      setError(null)
-      const response = await getUserBadges(userId)
+      const { data, error } = await supabase.functions.invoke('get-badges')
       
-      if (response?.data) {
-        setBadges(response.data.badges || [])
-        setBadgesByCategory(response.data.badges_by_category || {
-          participation: [],
-          validation: [],
-          projects: [],
-          community: [],
-          special: []
-        })
-        setTotalEarned(response.data.total_earned || 0)
-        setTotalAvailable(response.data.total_available || 0)
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al cargar insignias')
-      console.error('Error fetching badges:', err)
+      if (error) throw error
+      
+      // Agrupar insignias por categoría
+      const grouped: BadgesByCategory = {}
+      data.badges.forEach((badge: Badge) => {
+        if (!grouped[badge.category]) {
+          grouped[badge.category] = []
+        }
+        grouped[badge.category].push(badge)
+      })
+      
+      setBadgesByCategory(grouped)
+    } catch (err: any) {
+      setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [])
 
   useEffect(() => {
     fetchBadges()
+    
+    // Actualizar cada 30 segundos
+    const interval = setInterval(fetchBadges, 30000)
+    return () => clearInterval(interval)
   }, [fetchBadges])
 
   return {
-    badges,
     badgesByCategory,
-    totalEarned,
-    totalAvailable,
     loading,
     error,
-    refresh: fetchBadges
+    refetch: fetchBadges,
   }
 }
